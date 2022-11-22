@@ -7,25 +7,30 @@
 
 static bool test_playback = true;
 
+void log(const char* message) {
+  std::cout << message;
+  OutputDebugString(message);
+}
+
 class MiniAudioTest {
 public:
   MiniAudioTest() = default;
   virtual ~MiniAudioTest() = default;
   void Create() {
-    std::cout << "Creating ma_engine object...\n";
+    log("Creating ma_engine object...\n");
     engine_ = std::make_unique<ma_engine>();
     if (!engine_) {
-      std::cout << "Failed to create ma_engine object.\n";
+      log("Failed to create ma_engine object.\n");
       return;
     }
 
-    std::cout << "Invoking ma_engine_config_init()...\n";
+    log("Invoking ma_engine_config_init()...\n");
     ma_engine_config engine_config = ma_engine_config_init();
 
-    std::cout << "Invoking ma_engine_init()...\n";
+    log("Invoking ma_engine_init()...\n");
     ma_result result = ma_engine_init(&engine_config, engine_.get());
     if (result != MA_SUCCESS) {
-      std::cout << "ma_engine_init() error.\n";
+      log("ma_engine_init() error.\n");
       return;
     }
 
@@ -34,22 +39,22 @@ public:
 
   void Destroy() {
     if (!engine_) {
-      std::cout << "No ma_engine.\n";
+      log("No ma_engine.\n");
       return;
     }
 
     if (was_initialized_) {
-      std::cout << "Invoking ma_engine_stop()...\n";
+      log("Invoking ma_engine_stop()...\n");
       ma_result result = ma_engine_stop(engine_.get());
       if (result != MA_SUCCESS) {
-        std::cout << "ma_engine_stop() error.\n";
+        log("ma_engine_stop() error.\n");
       }
 
-      std::cout << "Invoking ma_engine_uninit()...\n";
+      log("Invoking ma_engine_uninit()...\n");
       ma_engine_uninit(engine_.get());
     }
 
-    std::cout << "Destroying ma_engine object...\n";
+    log("Destroying ma_engine object...\n");
     engine_ = nullptr;
     was_initialized_ = false;
   }

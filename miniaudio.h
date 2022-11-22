@@ -13171,6 +13171,13 @@ void ma_log_callback_debug(void* pUserData, ma_uint32 level, const char* pMessag
     }
     #else
     {
+#if defined(_MSC_VER)
+        constexpr int kBufferSize = 512;
+        char buffer[kBufferSize];
+        _snprintf(buffer, kBufferSize, "%s: %s", ma_log_level_to_string(level), pMessage);
+        OutputDebugString(buffer);
+#endif
+
         /* Everything else. */
         printf("%s: %s", ma_log_level_to_string(level), pMessage);
     }
