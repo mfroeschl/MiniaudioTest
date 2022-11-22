@@ -21997,7 +21997,9 @@ static ma_result ma_device_init_internal__wasapi(ma_context* pContext, ma_device
                             MA_AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | MA_AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY must not be in the stream flags. If either of these are specified,
                             IAudioClient3_InitializeSharedAudioStream() will fail.
                             */
+                            ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "Entering InitializeSharedAudioStream()...\n");
                             hr = ma_IAudioClient3_InitializeSharedAudioStream(pAudioClient3, streamFlags & ~(MA_AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | MA_AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY), actualPeriodInFrames, (WAVEFORMATEX*)&wf, NULL);
+                            ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "Left InitializeSharedAudioStream().\n");
                             if (SUCCEEDED(hr)) {
                                 wasInitializedUsingIAudioClient3 = MA_TRUE;
                                 pData->periodSizeInFramesOut = actualPeriodInFrames;
