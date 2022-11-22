@@ -1,9 +1,7 @@
 #include <iostream>
 #include <memory>
 
-#ifdef __APPLE__
-#define MA_NO_RUNTIME_LINKING
-#endif
+#define MA_DEBUG_OUTPUT
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
