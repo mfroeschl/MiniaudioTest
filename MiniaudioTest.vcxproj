@@ -129,6 +129,9 @@
   <ItemGroup>
     <ClCompile Include="MiniaudioTest.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="miniaudio.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
