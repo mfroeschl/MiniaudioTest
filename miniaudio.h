@@ -19979,7 +19979,7 @@ static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDeviceStateChanged(m
     ma_bool32 isPlayback   = MA_FALSE;
 
 #ifdef MA_DEBUG_OUTPUT
-    /*ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnDeviceStateChanged(pDeviceID=%S, dwNewState=%u)\n", (pDeviceID != NULL) ? pDeviceID : L"(NULL)", (unsigned int)dwNewState);*/
+    ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnDeviceStateChanged(pDeviceID=%S, dwNewState=%u)\n", (pDeviceID != NULL) ? pDeviceID : L"(NULL)", (unsigned int)dwNewState);
 #endif
 
     /*
@@ -20059,7 +20059,7 @@ static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDeviceStateChanged(m
 static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDeviceAdded(ma_IMMNotificationClient* pThis, LPCWSTR pDeviceID)
 {
 #ifdef MA_DEBUG_OUTPUT
-    /*ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnDeviceAdded(pDeviceID=%S)\n", (pDeviceID != NULL) ? pDeviceID : L"(NULL)");*/
+    ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnDeviceAdded(pDeviceID=%S)\n", (pDeviceID != NULL) ? pDeviceID : L"(NULL)");
 #endif
 
     /* We don't need to worry about this event for our purposes. */
@@ -20071,7 +20071,7 @@ static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDeviceAdded(ma_IMMNo
 static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDeviceRemoved(ma_IMMNotificationClient* pThis, LPCWSTR pDeviceID)
 {
 #ifdef MA_DEBUG_OUTPUT
-    /*ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnDeviceRemoved(pDeviceID=%S)\n", (pDeviceID != NULL) ? pDeviceID : L"(NULL)");*/
+    ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnDeviceRemoved(pDeviceID=%S)\n", (pDeviceID != NULL) ? pDeviceID : L"(NULL)");
 #endif
 
     /* We don't need to worry about this event for our purposes. */
@@ -20083,7 +20083,7 @@ static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDeviceRemoved(ma_IMM
 static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDefaultDeviceChanged(ma_IMMNotificationClient* pThis, ma_EDataFlow dataFlow, ma_ERole role, LPCWSTR pDefaultDeviceID)
 {
 #ifdef MA_DEBUG_OUTPUT
-    /*ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnDefaultDeviceChanged(dataFlow=%d, role=%d, pDefaultDeviceID=%S)\n", dataFlow, role, (pDefaultDeviceID != NULL) ? pDefaultDeviceID : L"(NULL)");*/
+    ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnDefaultDeviceChanged(dataFlow=%d, role=%d, pDefaultDeviceID=%S)\n", dataFlow, role, (pDefaultDeviceID != NULL) ? pDefaultDeviceID : L"(NULL)");
 #endif
 
     /* We only ever use the eConsole role in miniaudio. */
@@ -20173,7 +20173,7 @@ static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDefaultDeviceChanged
 static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnPropertyValueChanged(ma_IMMNotificationClient* pThis, LPCWSTR pDeviceID, const PROPERTYKEY key)
 {
 #ifdef MA_DEBUG_OUTPUT
-    /*ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnPropertyValueChanged(pDeviceID=%S)\n", (pDeviceID != NULL) ? pDeviceID : L"(NULL)");*/
+    ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "IMMNotificationClient_OnPropertyValueChanged(pDeviceID=%S)\n", (pDeviceID != NULL) ? pDeviceID : L"(NULL)");
 #endif
 
     (void)pThis;
