@@ -26,6 +26,8 @@ public:
       std::cout << "ma_engine_init() error.\n";
       return;
     }
+
+    was_initialized_ = true;
   }
 
   void Destroy() {
@@ -34,21 +36,25 @@ public:
       return;
     }
 
-    std::cout << "Invoking ma_engine_stop()...\n";
-    ma_result result = ma_engine_stop(engine_.get());
-    if (result != MA_SUCCESS) {
-      std::cout << "ma_engine_stop() error.\n";
-    }
+    if (was_initialized_) {
+      std::cout << "Invoking ma_engine_stop()...\n";
+      ma_result result = ma_engine_stop(engine_.get());
+      if (result != MA_SUCCESS) {
+        std::cout << "ma_engine_stop() error.\n";
+      }
 
-    std::cout << "Invoking ma_engine_uninit()...\n";
-    ma_engine_uninit(engine_.get());
+      std::cout << "Invoking ma_engine_uninit()...\n";
+      ma_engine_uninit(engine_.get());
+    }
 
     std::cout << "Destroying ma_engine object...\n";
     engine_ = nullptr;
+    was_initialized_ = false;
   }
 
 private:
   std::unique_ptr<ma_engine> engine_{ nullptr };
+  bool was_initialized_{ false };
 };
 
 int main() {
