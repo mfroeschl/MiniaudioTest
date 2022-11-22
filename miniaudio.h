@@ -10860,7 +10860,7 @@ typedef struct
     ma_uint32 channelsOut;
     ma_uint32 sampleRate;               /* Only used when the type is set to ma_engine_node_type_sound. */
     ma_mono_expansion_mode monoExpansionMode;
-    ma_bool8 isPitchDisabled;           /* Pitching can be explicitly disable with MA_SOUND_FLAG_NO_PITCH to optimize processing. */
+    ma_bool8 isPitchDisabled;           /* Pitching can be explicitly disabled with MA_SOUND_FLAG_NO_PITCH to optimize processing. */
     ma_bool8 isSpatializationDisabled;  /* Spatialization can be explicitly disabled with MA_SOUND_FLAG_NO_SPATIALIZATION. */
     ma_uint8 pinnedListenerIndex;       /* The index of the listener this node should always use for spatialization. If set to MA_LISTENER_INDEX_CLOSEST the engine will use the closest listener. */
 } ma_engine_node_config;
@@ -41247,54 +41247,59 @@ MA_API ma_result ma_device_stop(ma_device* pDevice)
         return MA_SUCCESS;  /* Already stopped. */
     }
 
-    ma_mutex_lock(&pDevice->startStopLock);
+    /* Wait for any rerouting to finish before attempting to stop the device. */
+    ma_mutex_lock(&pDevice->wasapi.rerouteLock);
     {
-        /* Starting and stopping are wrapped in a mutex which means we can assert that the device is in a started or paused state. */
-        MA_ASSERT(ma_device_get_state(pDevice) == ma_device_state_started);
+        ma_mutex_lock(&pDevice->startStopLock);
+        {
+            /* Starting and stopping are wrapped in a mutex which means we can assert that the device is in a started or paused state. */
+            MA_ASSERT(ma_device_get_state(pDevice) == ma_device_state_started);
 
-        ma_device__set_state(pDevice, ma_device_state_stopping);
+            ma_device__set_state(pDevice, ma_device_state_stopping);
 
-        /* Asynchronous backends need to be handled differently. */
-        if (ma_context_is_backend_asynchronous(pDevice->pContext)) {
-            /* Asynchronous backends must have a stop operation. */
-            if (pDevice->pContext->callbacks.onDeviceStop != NULL) {
-                result = pDevice->pContext->callbacks.onDeviceStop(pDevice);
+            /* Asynchronous backends need to be handled differently. */
+            if (ma_context_is_backend_asynchronous(pDevice->pContext)) {
+                /* Asynchronous backends must have a stop operation. */
+                if (pDevice->pContext->callbacks.onDeviceStop != NULL) {
+                    result = pDevice->pContext->callbacks.onDeviceStop(pDevice);
+                } else {
+                    result = MA_INVALID_OPERATION;
+                }
+
+                ma_device__set_state(pDevice, ma_device_state_stopped);
             } else {
-                result = MA_INVALID_OPERATION;
+                /*
+                Synchronous backends. The stop callback is always called from the worker thread. Do not call the stop callback here. If
+                the backend is implementing it's own audio thread loop we'll need to wake it up if required. Note that we need to make
+                sure the state of the device is *not* playing right now, which it shouldn't be since we set it above. This is super
+                important though, so I'm asserting it here as well for extra safety in case we accidentally change something later.
+                */
+                MA_ASSERT(ma_device_get_state(pDevice) != ma_device_state_started);
+
+                if (pDevice->pContext->callbacks.onDeviceDataLoopWakeup != NULL) {
+                    pDevice->pContext->callbacks.onDeviceDataLoopWakeup(pDevice);
+                }
+
+                /*
+                We need to wait for the worker thread to become available for work before returning. Note that the worker thread will be
+                the one who puts the device into the stopped state. Don't call ma_device__set_state() here.
+                */
+                ma_event_wait(&pDevice->stopEvent);
+                result = MA_SUCCESS;
             }
 
-            ma_device__set_state(pDevice, ma_device_state_stopped);
-        } else {
             /*
-            Synchronous backends. The stop callback is always called from the worker thread. Do not call the stop callback here. If
-            the backend is implementing it's own audio thread loop we'll need to wake it up if required. Note that we need to make
-            sure the state of the device is *not* playing right now, which it shouldn't be since we set it above. This is super
-            important though, so I'm asserting it here as well for extra safety in case we accidentally change something later.
+            This is a safety measure to ensure the internal buffer has been cleared so any leftover
+            does not get played the next time the device starts. Ideally this should be drained by
+            the backend first.
             */
-            MA_ASSERT(ma_device_get_state(pDevice) != ma_device_state_started);
-
-            if (pDevice->pContext->callbacks.onDeviceDataLoopWakeup != NULL) {
-                pDevice->pContext->callbacks.onDeviceDataLoopWakeup(pDevice);
-            }
-
-            /*
-            We need to wait for the worker thread to become available for work before returning. Note that the worker thread will be
-            the one who puts the device into the stopped state. Don't call ma_device__set_state() here.
-            */
-            ma_event_wait(&pDevice->stopEvent);
-            result = MA_SUCCESS;
+            pDevice->playback.intermediaryBufferLen = 0;
+            pDevice->playback.inputCacheConsumed    = 0;
+            pDevice->playback.inputCacheRemaining   = 0;
         }
-
-        /*
-        This is a safety measure to ensure the internal buffer has been cleared so any leftover
-        does not get played the next time the device starts. Ideally this should be drained by
-        the backend first.
-        */
-        pDevice->playback.intermediaryBufferLen = 0;
-        pDevice->playback.inputCacheConsumed    = 0;
-        pDevice->playback.inputCacheRemaining   = 0;
+        ma_mutex_unlock(&pDevice->startStopLock);
     }
-    ma_mutex_unlock(&pDevice->startStopLock);
+    ma_mutex_unlock(&pDevice->wasapi.rerouteLock);
 
     return result;
 }
@@ -72629,9 +72634,16 @@ MA_API ma_result ma_engine_node_init_preallocated(const ma_engine_node_config* p
     pEngineNode->isSpatializationDisabled = pConfig->isSpatializationDisabled;
     pEngineNode->pinnedListenerIndex      = pConfig->pinnedListenerIndex;
 
-
     channelsIn  = (pConfig->channelsIn  != 0) ? pConfig->channelsIn  : ma_engine_get_channels(pConfig->pEngine);
     channelsOut = (pConfig->channelsOut != 0) ? pConfig->channelsOut : ma_engine_get_channels(pConfig->pEngine);
+
+    /*
+    If the sample rate of the sound is different to the engine, make sure pitching is enabled so that the resampler
+    is activated. Not doing this will result in the sound not being resampled if MA_SOUND_FLAG_NO_PITCH is used.
+    */
+    if (pEngineNode->sampleRate != ma_engine_get_sample_rate(pEngineNode->pEngine)) {
+        pEngineNode->isPitchDisabled = MA_FALSE;
+    }
 
 
     /* Base node. */
