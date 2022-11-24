@@ -3899,6 +3899,14 @@ typedef ma_uint16 wchar_t;
     #endif
 #endif
 
+#ifndef MA_RESTRICT
+    #if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
+        #define MA_RESTRICT __restrict
+    #else
+        #define MA_RESTRICT
+    #endif
+#endif
+
 /* SIMD alignment in bytes. Currently set to 32 bytes in preparation for future AVX optimizations. */
 #define MA_SIMD_ALIGNMENT  32
 
@@ -9240,6 +9248,11 @@ Retrieves a friendly name for a backend.
 MA_API const char* ma_get_backend_name(ma_backend backend);
 
 /*
+Retrieves the backend enum from the given name.
+*/
+MA_API ma_result ma_get_backend_from_name(const char* pBackendName, ma_backend* pBackend);
+
+/*
 Determines whether or not the given backend is available by the compilation environment.
 */
 MA_API ma_bool32 ma_is_backend_enabled(ma_backend backend);
@@ -11515,7 +11528,8 @@ static MA_INLINE ma_bool32 ma_has_neon(void)
 #define MA_SIMD_NEON    3
 
 #ifndef MA_PREFERRED_SIMD
-    #  if defined(MA_SUPPORT_SSE2) && defined(MA_PREFER_SSE2)
+    /* Prefer SSE2 over AVX2 if AVX2 has not bee explicitly requested. */
+    #  if defined(MA_SUPPORT_SSE2) && (defined(MA_PREFER_SSE2) || !defined(MA_PREFER_AVX2))
         #define MA_PREFERRED_SIMD MA_SIMD_SSE2
     #elif defined(MA_SUPPORT_AVX2) && defined(MA_PREFER_AVX2)
         #define MA_PREFERRED_SIMD MA_SIMD_AVX2
@@ -11541,14 +11555,6 @@ static MA_INLINE ma_bool32 ma_has_neon(void)
         #define MA_ASSUME(x) __assume(x)
     #else
         #define MA_ASSUME(x) (void)(x)
-    #endif
-#endif
-
-#ifndef MA_RESTRICT
-    #if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-        #define MA_RESTRICT __restrict
-    #else
-        #define MA_RESTRICT
     #endif
 #endif
 
@@ -11940,6 +11946,14 @@ MA_API const char* ma_version_string(void)
 Standard Library Stuff
 
 ******************************************************************************/
+#ifndef MA_ASSERT
+#ifdef MA_WIN32
+#define MA_ASSERT(condition) assert(condition)
+#else
+#define MA_ASSERT(condition) assert(condition)
+#endif
+#endif
+
 #ifndef MA_MALLOC
 #ifdef MA_WIN32
 #define MA_MALLOC(sz) HeapAlloc(GetProcessHeap(), 0, (sz))
@@ -11966,6 +11980,11 @@ Standard Library Stuff
 
 static MA_INLINE void ma_zero_memory_default(void* p, size_t sz)
 {
+    if (p == NULL) {
+        MA_ASSERT(sz == 0); /* If this is triggered there's an error with the calling code. */
+        return;
+    }
+
 #ifdef MA_WIN32
     ZeroMemory(p, sz);
 #else
@@ -11992,14 +12011,6 @@ static MA_INLINE void ma_zero_memory_default(void* p, size_t sz)
 #define MA_MOVE_MEMORY(dst, src, sz) MoveMemory((dst), (src), (sz))
 #else
 #define MA_MOVE_MEMORY(dst, src, sz) memmove((dst), (src), (sz))
-#endif
-#endif
-
-#ifndef MA_ASSERT
-#ifdef MA_WIN32
-#define MA_ASSERT(condition) assert(condition)
-#else
-#define MA_ASSERT(condition) assert(condition)
 #endif
 #endif
 
@@ -13806,11 +13817,17 @@ typedef unsigned char           c89atomic_bool;
 #define C89ATOMIC_32BIT
 #endif
 #endif
+#if defined(__arm__) || defined(_M_ARM)
+#define C89ATOMIC_ARM32
+#endif
+#if defined(__arm64) || defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
+#define C89ATOMIC_ARM64
+#endif
 #if defined(__x86_64__) || defined(_M_X64)
 #define C89ATOMIC_X64
 #elif defined(__i386) || defined(_M_IX86)
 #define C89ATOMIC_X86
-#elif defined(__arm__) || defined(_M_ARM) || defined(__arm64) || defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
+#elif defined(C89ATOMIC_ARM32) || defined(C89ATOMIC_ARM64)
 #define C89ATOMIC_ARM
 #endif
 #if defined(_MSC_VER)
@@ -13831,6 +13848,56 @@ typedef unsigned char           c89atomic_bool;
 #define C89ATOMIC_HAS_32
 #define C89ATOMIC_HAS_64
 #if (defined(_MSC_VER) ) || defined(__WATCOMC__) || defined(__DMC__)
+    #define C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, intrin, c89atomicType, msvcType)   \
+        c89atomicType result; \
+        switch (order) \
+        { \
+            case c89atomic_memory_order_relaxed: \
+            { \
+                result = (c89atomicType)intrin##_nf((volatile msvcType*)dst, (msvcType)src); \
+            } break; \
+            case c89atomic_memory_order_consume: \
+            case c89atomic_memory_order_acquire: \
+            { \
+                result = (c89atomicType)intrin##_acq((volatile msvcType*)dst, (msvcType)src); \
+            } break; \
+            case c89atomic_memory_order_release: \
+            { \
+                result = (c89atomicType)intrin##_rel((volatile msvcType*)dst, (msvcType)src); \
+            } break; \
+            case c89atomic_memory_order_acq_rel: \
+            case c89atomic_memory_order_seq_cst: \
+            default: \
+            { \
+                result = (c89atomicType)intrin((volatile msvcType*)dst, (msvcType)src); \
+            } break; \
+        } \
+        return result;
+    #define C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, expected, desired, order, intrin, c89atomicType, msvcType)   \
+        c89atomicType result; \
+        switch (order) \
+        { \
+            case c89atomic_memory_order_relaxed: \
+            { \
+                result = (c89atomicType)intrin##_nf((volatile msvcType*)ptr, (msvcType)expected, (msvcType)desired); \
+            } break; \
+            case c89atomic_memory_order_consume: \
+            case c89atomic_memory_order_acquire: \
+            { \
+                result = (c89atomicType)intrin##_acq((volatile msvcType*)ptr, (msvcType)expected, (msvcType)desired); \
+            } break; \
+            case c89atomic_memory_order_release: \
+            { \
+                result = (c89atomicType)intrin##_rel((volatile msvcType*)ptr, (msvcType)expected, (msvcType)desired); \
+            } break; \
+            case c89atomic_memory_order_acq_rel: \
+            case c89atomic_memory_order_seq_cst: \
+            default: \
+            { \
+                result = (c89atomicType)intrin((volatile msvcType*)ptr, (msvcType)expected, (msvcType)desired); \
+            } break; \
+        } \
+        return result;
     #define c89atomic_memory_order_relaxed  0
     #define c89atomic_memory_order_consume  1
     #define c89atomic_memory_order_acquire  2
@@ -13969,29 +14036,45 @@ typedef unsigned char           c89atomic_bool;
         #if defined(C89ATOMIC_HAS_8)
             static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_exchange_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchange8, c89atomic_uint8, char);
+            #else
                 (void)order;
                 return (c89atomic_uint8)_InterlockedExchange8((volatile char*)dst, (char)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_16)
             static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_exchange_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchange16, c89atomic_uint16, short);
+            #else
                 (void)order;
                 return (c89atomic_uint16)_InterlockedExchange16((volatile short*)dst, (short)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_32)
             static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_exchange_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchange, c89atomic_uint32, long);
+            #else
                 (void)order;
                 return (c89atomic_uint32)_InterlockedExchange((volatile long*)dst, (long)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_64) && defined(C89ATOMIC_64BIT)
             static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_exchange_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchange64, c89atomic_uint64, long long);
+            #else
                 (void)order;
                 return (c89atomic_uint64)_InterlockedExchange64((volatile long long*)dst, (long long)src);
+            #endif
             }
         #else
         #endif
@@ -14054,29 +14137,45 @@ typedef unsigned char           c89atomic_bool;
         #if defined(C89ATOMIC_HAS_8)
             static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_fetch_add_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchangeAdd8, c89atomic_uint8, char);
+            #else
                 (void)order;
                 return (c89atomic_uint8)_InterlockedExchangeAdd8((volatile char*)dst, (char)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_16)
             static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_fetch_add_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchangeAdd16, c89atomic_uint16, short);
+            #else
                 (void)order;
                 return (c89atomic_uint16)_InterlockedExchangeAdd16((volatile short*)dst, (short)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_32)
             static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_fetch_add_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchangeAdd, c89atomic_uint32, long);
+            #else
                 (void)order;
                 return (c89atomic_uint32)_InterlockedExchangeAdd((volatile long*)dst, (long)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_64) && defined(C89ATOMIC_64BIT)
             static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_fetch_add_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchangeAdd64, c89atomic_uint64, long long);
+            #else
                 (void)order;
                 return (c89atomic_uint64)_InterlockedExchangeAdd64((volatile long long*)dst, (long long)src);
+            #endif
             }
         #else
         #endif
@@ -14105,6 +14204,8 @@ typedef unsigned char           c89atomic_bool;
     #else
         #if defined(C89ATOMIC_X64)
             #define c89atomic_thread_fence(order)   __faststorefence(), (void)order
+        #elif defined(C89ATOMIC_ARM64)
+            #define c89atomic_thread_fence(order)   __dmb(_ARM64_BARRIER_ISH), (void)order
         #else
             static C89ATOMIC_INLINE void c89atomic_thread_fence(c89atomic_memory_order order)
             {
@@ -14118,29 +14219,45 @@ typedef unsigned char           c89atomic_bool;
     #if defined(C89ATOMIC_HAS_8)
         static C89ATOMIC_INLINE c89atomic_uint8 c89atomic_load_explicit_8(volatile const c89atomic_uint8* ptr, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, 0, 0, order, _InterlockedCompareExchange8, c89atomic_uint8, char);
+        #else
             (void)order;
             return c89atomic_compare_and_swap_8((volatile c89atomic_uint8*)ptr, 0, 0);
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_16)
         static C89ATOMIC_INLINE c89atomic_uint16 c89atomic_load_explicit_16(volatile const c89atomic_uint16* ptr, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, 0, 0, order, _InterlockedCompareExchange16, c89atomic_uint16, short);
+        #else
             (void)order;
             return c89atomic_compare_and_swap_16((volatile c89atomic_uint16*)ptr, 0, 0);
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_32)
         static C89ATOMIC_INLINE c89atomic_uint32 c89atomic_load_explicit_32(volatile const c89atomic_uint32* ptr, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, 0, 0, order, _InterlockedCompareExchange, c89atomic_uint32, long);
+        #else
             (void)order;
             return c89atomic_compare_and_swap_32((volatile c89atomic_uint32*)ptr, 0, 0);
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_64)
         static C89ATOMIC_INLINE c89atomic_uint64 c89atomic_load_explicit_64(volatile const c89atomic_uint64* ptr, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, 0, 0, order, _InterlockedCompareExchange64, c89atomic_uint64, long long);
+        #else
             (void)order;
             return c89atomic_compare_and_swap_64((volatile c89atomic_uint64*)ptr, 0, 0);
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_8)
@@ -14210,6 +14327,9 @@ typedef unsigned char           c89atomic_bool;
     #if defined(C89ATOMIC_HAS_8)
         static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_fetch_and_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedAnd8, c89atomic_uint8, char);
+        #else
             c89atomic_uint8 oldValue;
             c89atomic_uint8 newValue;
             do {
@@ -14218,11 +14338,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_8(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_16)
         static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_fetch_and_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedAnd16, c89atomic_uint16, short);
+        #else
             c89atomic_uint16 oldValue;
             c89atomic_uint16 newValue;
             do {
@@ -14231,11 +14355,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_16(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_32)
         static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_fetch_and_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedAnd, c89atomic_uint32, long);
+        #else
             c89atomic_uint32 oldValue;
             c89atomic_uint32 newValue;
             do {
@@ -14244,11 +14372,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_32(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_64)
         static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_fetch_and_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedAnd64, c89atomic_uint64, long long);
+        #else
             c89atomic_uint64 oldValue;
             c89atomic_uint64 newValue;
             do {
@@ -14257,11 +14389,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_64(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_8)
         static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_fetch_xor_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedXor8, c89atomic_uint8, char);
+        #else
             c89atomic_uint8 oldValue;
             c89atomic_uint8 newValue;
             do {
@@ -14270,11 +14406,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_8(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_16)
         static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_fetch_xor_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedXor16, c89atomic_uint16, short);
+        #else
             c89atomic_uint16 oldValue;
             c89atomic_uint16 newValue;
             do {
@@ -14283,11 +14423,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_16(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_32)
         static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_fetch_xor_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedXor, c89atomic_uint32, long);
+        #else
             c89atomic_uint32 oldValue;
             c89atomic_uint32 newValue;
             do {
@@ -14296,11 +14440,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_32(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_64)
         static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_fetch_xor_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedXor64, c89atomic_uint64, long long);
+        #else
             c89atomic_uint64 oldValue;
             c89atomic_uint64 newValue;
             do {
@@ -14309,11 +14457,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_64(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_8)
         static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_fetch_or_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedOr8, c89atomic_uint8, char);
+        #else
             c89atomic_uint8 oldValue;
             c89atomic_uint8 newValue;
             do {
@@ -14322,11 +14474,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_8(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_16)
         static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_fetch_or_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedOr16, c89atomic_uint16, short);
+        #else
             c89atomic_uint16 oldValue;
             c89atomic_uint16 newValue;
             do {
@@ -14335,11 +14491,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_16(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_32)
         static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_fetch_or_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedOr, c89atomic_uint32, long);
+        #else
             c89atomic_uint32 oldValue;
             c89atomic_uint32 newValue;
             do {
@@ -14348,11 +14508,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_32(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_64)
         static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_fetch_or_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedOr64, c89atomic_uint64, long long);
+        #else
             c89atomic_uint64 oldValue;
             c89atomic_uint64 newValue;
             do {
@@ -14361,6 +14525,7 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_64(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_8)
@@ -17474,27 +17639,60 @@ MA_API void ma_device_info_add_native_data_format(ma_device_info* pDeviceInfo, m
 }
 
 
+typedef struct
+{
+    ma_backend backend;
+    const char* pName;
+} ma_backend_info;
+
+static ma_backend_info gBackendInfo[] = /* Indexed by the backend enum. Must be in the order backends are declared in the ma_backend enum. */
+{
+    {ma_backend_wasapi,     "WASAPI"},
+    {ma_backend_dsound,     "DirectSound"},
+    {ma_backend_winmm,      "WinMM"},
+    {ma_backend_coreaudio,  "Core Audio"},
+    {ma_backend_sndio,      "sndio"},
+    {ma_backend_audio4,     "audio(4)"},
+    {ma_backend_oss,        "OSS"},
+    {ma_backend_pulseaudio, "PulseAudio"},
+    {ma_backend_alsa,       "ALSA"},
+    {ma_backend_jack,       "JACK"},
+    {ma_backend_aaudio,     "AAudio"},
+    {ma_backend_opensl,     "OpenSL|ES"},
+    {ma_backend_webaudio,   "Web Audio"},
+    {ma_backend_custom,     "Custom"},
+    {ma_backend_null,       "Null"}
+};
+
 MA_API const char* ma_get_backend_name(ma_backend backend)
 {
-    switch (backend)
-    {
-        case ma_backend_wasapi:     return "WASAPI";
-        case ma_backend_dsound:     return "DirectSound";
-        case ma_backend_winmm:      return "WinMM";
-        case ma_backend_coreaudio:  return "Core Audio";
-        case ma_backend_sndio:      return "sndio";
-        case ma_backend_audio4:     return "audio(4)";
-        case ma_backend_oss:        return "OSS";
-        case ma_backend_pulseaudio: return "PulseAudio";
-        case ma_backend_alsa:       return "ALSA";
-        case ma_backend_jack:       return "JACK";
-        case ma_backend_aaudio:     return "AAudio";
-        case ma_backend_opensl:     return "OpenSL|ES";
-        case ma_backend_webaudio:   return "Web Audio";
-        case ma_backend_custom:     return "Custom";
-        case ma_backend_null:       return "Null";
-        default:                    return "Unknown";
+    if (backend < 0 || backend >= (int)ma_countof(gBackendInfo)) {
+        return "Unknown";
     }
+
+    return gBackendInfo[backend].pName;
+}
+
+MA_API ma_result ma_get_backend_from_name(const char* pBackendName, ma_backend* pBackend)
+{
+    size_t iBackend;
+
+    if (pBackendName == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    for (iBackend = 0; iBackend < ma_countof(gBackendInfo); iBackend += 1) {
+        if (ma_strcmp(pBackendName, gBackendInfo[iBackend].pName) == 0) {
+            if (pBackend != NULL) {
+                *pBackend = gBackendInfo[iBackend].backend;
+            }
+
+            return MA_SUCCESS;
+        }
+    }
+
+    /* Getting here means the backend name is unknown. */
+    return MA_INVALID_ARGS;
 }
 
 MA_API ma_bool32 ma_is_backend_enabled(ma_backend backend)
@@ -22367,11 +22565,9 @@ static ma_result ma_device_reroute__wasapi(ma_device* pDevice, ma_device_type de
     return MA_SUCCESS;
 }
 
-static ma_result ma_device_start__wasapi(ma_device* pDevice)
+static ma_result ma_device_start__wasapi_nolock(ma_device* pDevice)
 {
     HRESULT hr;
-
-    MA_ASSERT(pDevice != NULL);
 
     if (pDevice->pContext->wasapi.hAvrt) {
         LPCWSTR pTaskName = ma_to_usage_string__wasapi(pDevice->wasapi.usage);
@@ -22404,7 +22600,23 @@ static ma_result ma_device_start__wasapi(ma_device* pDevice)
     return MA_SUCCESS;
 }
 
-static ma_result ma_device_stop__wasapi(ma_device* pDevice)
+static ma_result ma_device_start__wasapi(ma_device* pDevice)
+{
+    ma_result result;
+
+    MA_ASSERT(pDevice != NULL);
+
+    /* Wait for any rerouting to finish before attempting to start the device. */
+    ma_mutex_lock(&pDevice->wasapi.rerouteLock);
+    {
+        result = ma_device_start__wasapi_nolock(pDevice);
+    }
+    ma_mutex_unlock(&pDevice->wasapi.rerouteLock);
+
+    return result;
+}
+
+static ma_result ma_device_stop__wasapi_nolock(ma_device* pDevice)
 {
     ma_result result;
     HRESULT hr;
@@ -22433,7 +22645,7 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
         /* If we have a mapped buffer we need to release it. */
         if (pDevice->wasapi.pMappedBufferCapture != NULL) {
             ma_IAudioCaptureClient_ReleaseBuffer((ma_IAudioCaptureClient*)pDevice->wasapi.pCaptureClient, pDevice->wasapi.mappedBufferCaptureCap);
-            pDevice->wasapi.pMappedBufferCapture   = NULL;
+            pDevice->wasapi.pMappedBufferCapture = NULL;
             pDevice->wasapi.mappedBufferCaptureCap = 0;
             pDevice->wasapi.mappedBufferCaptureLen = 0;
         }
@@ -22452,7 +22664,8 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
 
             if (pDevice->playback.shareMode == ma_share_mode_exclusive) {
                 WaitForSingleObject(pDevice->wasapi.hEventPlayback, waitTime);
-            } else {
+            }
+            else {
                 ma_uint32 prevFramesAvaialablePlayback = (ma_uint32)-1;
                 ma_uint32 framesAvailablePlayback;
                 for (;;) {
@@ -22495,7 +22708,7 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
 
         if (pDevice->wasapi.pMappedBufferPlayback != NULL) {
             ma_IAudioRenderClient_ReleaseBuffer((ma_IAudioRenderClient*)pDevice->wasapi.pRenderClient, pDevice->wasapi.mappedBufferPlaybackCap, 0);
-            pDevice->wasapi.pMappedBufferPlayback   = NULL;
+            pDevice->wasapi.pMappedBufferPlayback = NULL;
             pDevice->wasapi.mappedBufferPlaybackCap = 0;
             pDevice->wasapi.mappedBufferPlaybackLen = 0;
         }
@@ -22504,6 +22717,22 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
     }
 
     return MA_SUCCESS;
+}
+
+static ma_result ma_device_stop__wasapi(ma_device* pDevice)
+{
+    ma_result result;
+
+    MA_ASSERT(pDevice != NULL);
+
+    /* Wait for any rerouting to finish before attempting to stop the device. */
+    ma_mutex_lock(&pDevice->wasapi.rerouteLock);
+    {
+        result = ma_device_stop__wasapi_nolock(pDevice);
+    }
+    ma_mutex_unlock(&pDevice->wasapi.rerouteLock);
+
+    return result;
 }
 
 
@@ -22612,7 +22841,7 @@ static ma_result ma_device_read__wasapi(ma_device* pDevice, void* pFrames, ma_ui
                         for (i = 0; i < iterationCount; i += 1) {
                             hr = ma_IAudioCaptureClient_ReleaseBuffer((ma_IAudioCaptureClient*)pDevice->wasapi.pCaptureClient, pDevice->wasapi.mappedBufferCaptureCap);
                             if (FAILED(hr)) {
-                                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Data discontinuity recovery: IAudioCaptureClient_ReleaseBuffer() failed with %d.\n", hr);
+                                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Data discontinuity recovery: IAudioCaptureClient_ReleaseBuffer() failed with %ld.\n", hr);
                                 break;
                             }
 
@@ -22637,7 +22866,7 @@ static ma_result ma_device_read__wasapi(ma_device* pDevice, void* pFrames, ma_ui
                                 }
 
                                 if (FAILED(hr)) {
-                                    ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Data discontinuity recovery: IAudioCaptureClient_GetBuffer() failed with %d.\n", hr);
+                                    ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Data discontinuity recovery: IAudioCaptureClient_GetBuffer() failed with %ld.\n", hr);
                                 }
 
                                 break;
@@ -41182,51 +41411,46 @@ MA_API ma_result ma_device_start(ma_device* pDevice)
         return MA_SUCCESS;  /* Already started. */
     }
 
-    /* Wait for any rerouting to finish before attempting to start the device. */
-    ma_mutex_lock(&pDevice->wasapi.rerouteLock);
+    ma_mutex_lock(&pDevice->startStopLock);
     {
-        ma_mutex_lock(&pDevice->startStopLock);
-        {
-            /* Starting and stopping are wrapped in a mutex which means we can assert that the device is in a stopped or paused state. */
-            MA_ASSERT(ma_device_get_state(pDevice) == ma_device_state_stopped);
+        /* Starting and stopping are wrapped in a mutex which means we can assert that the device is in a stopped or paused state. */
+        MA_ASSERT(ma_device_get_state(pDevice) == ma_device_state_stopped);
 
-            ma_device__set_state(pDevice, ma_device_state_starting);
+        ma_device__set_state(pDevice, ma_device_state_starting);
 
-            /* Asynchronous backends need to be handled differently. */
-            if (ma_context_is_backend_asynchronous(pDevice->pContext)) {
-                if (pDevice->pContext->callbacks.onDeviceStart != NULL) {
-                    result = pDevice->pContext->callbacks.onDeviceStart(pDevice);
-                } else {
-                    result = MA_INVALID_OPERATION;
-                }
-
-                if (result == MA_SUCCESS) {
-                    ma_device__set_state(pDevice, ma_device_state_started);
-                    ma_device__on_notification_started(pDevice);
-                }
+        /* Asynchronous backends need to be handled differently. */
+        if (ma_context_is_backend_asynchronous(pDevice->pContext)) {
+            if (pDevice->pContext->callbacks.onDeviceStart != NULL) {
+                result = pDevice->pContext->callbacks.onDeviceStart(pDevice);
             } else {
-                /*
-                Synchronous backends are started by signaling an event that's being waited on in the worker thread. We first wake up the
-                thread and then wait for the start event.
-                */
-                ma_event_signal(&pDevice->wakeupEvent);
-
-                /*
-                Wait for the worker thread to finish starting the device. Note that the worker thread will be the one who puts the device
-                into the started state. Don't call ma_device__set_state() here.
-                */
-                ma_event_wait(&pDevice->startEvent);
-                result = pDevice->workResult;
+                result = MA_INVALID_OPERATION;
             }
 
-            /* We changed the state from stopped to started, so if we failed, make sure we put the state back to stopped. */
-            if (result != MA_SUCCESS) {
-                ma_device__set_state(pDevice, ma_device_state_stopped);
+            if (result == MA_SUCCESS) {
+                ma_device__set_state(pDevice, ma_device_state_started);
+                ma_device__on_notification_started(pDevice);
             }
+        } else {
+            /*
+            Synchronous backends are started by signaling an event that's being waited on in the worker thread. We first wake up the
+            thread and then wait for the start event.
+            */
+            ma_event_signal(&pDevice->wakeupEvent);
+
+            /*
+            Wait for the worker thread to finish starting the device. Note that the worker thread will be the one who puts the device
+            into the started state. Don't call ma_device__set_state() here.
+            */
+            ma_event_wait(&pDevice->startEvent);
+            result = pDevice->workResult;
         }
-        ma_mutex_unlock(&pDevice->startStopLock);
+
+        /* We changed the state from stopped to started, so if we failed, make sure we put the state back to stopped. */
+        if (result != MA_SUCCESS) {
+            ma_device__set_state(pDevice, ma_device_state_stopped);
+        }
     }
-    ma_mutex_unlock(&pDevice->wasapi.rerouteLock);
+    ma_mutex_unlock(&pDevice->startStopLock);
 
     return result;
 }
@@ -41247,59 +41471,54 @@ MA_API ma_result ma_device_stop(ma_device* pDevice)
         return MA_SUCCESS;  /* Already stopped. */
     }
 
-    /* Wait for any rerouting to finish before attempting to stop the device. */
-    ma_mutex_lock(&pDevice->wasapi.rerouteLock);
+    ma_mutex_lock(&pDevice->startStopLock);
     {
-        ma_mutex_lock(&pDevice->startStopLock);
-        {
-            /* Starting and stopping are wrapped in a mutex which means we can assert that the device is in a started or paused state. */
-            MA_ASSERT(ma_device_get_state(pDevice) == ma_device_state_started);
+        /* Starting and stopping are wrapped in a mutex which means we can assert that the device is in a started or paused state. */
+        MA_ASSERT(ma_device_get_state(pDevice) == ma_device_state_started);
 
-            ma_device__set_state(pDevice, ma_device_state_stopping);
+        ma_device__set_state(pDevice, ma_device_state_stopping);
 
-            /* Asynchronous backends need to be handled differently. */
-            if (ma_context_is_backend_asynchronous(pDevice->pContext)) {
-                /* Asynchronous backends must have a stop operation. */
-                if (pDevice->pContext->callbacks.onDeviceStop != NULL) {
-                    result = pDevice->pContext->callbacks.onDeviceStop(pDevice);
-                } else {
-                    result = MA_INVALID_OPERATION;
-                }
-
-                ma_device__set_state(pDevice, ma_device_state_stopped);
+        /* Asynchronous backends need to be handled differently. */
+        if (ma_context_is_backend_asynchronous(pDevice->pContext)) {
+            /* Asynchronous backends must have a stop operation. */
+            if (pDevice->pContext->callbacks.onDeviceStop != NULL) {
+                result = pDevice->pContext->callbacks.onDeviceStop(pDevice);
             } else {
-                /*
-                Synchronous backends. The stop callback is always called from the worker thread. Do not call the stop callback here. If
-                the backend is implementing it's own audio thread loop we'll need to wake it up if required. Note that we need to make
-                sure the state of the device is *not* playing right now, which it shouldn't be since we set it above. This is super
-                important though, so I'm asserting it here as well for extra safety in case we accidentally change something later.
-                */
-                MA_ASSERT(ma_device_get_state(pDevice) != ma_device_state_started);
+                result = MA_INVALID_OPERATION;
+            }
 
-                if (pDevice->pContext->callbacks.onDeviceDataLoopWakeup != NULL) {
-                    pDevice->pContext->callbacks.onDeviceDataLoopWakeup(pDevice);
-                }
+            ma_device__set_state(pDevice, ma_device_state_stopped);
+        } else {
+            /*
+            Synchronous backends. The stop callback is always called from the worker thread. Do not call the stop callback here. If
+            the backend is implementing it's own audio thread loop we'll need to wake it up if required. Note that we need to make
+            sure the state of the device is *not* playing right now, which it shouldn't be since we set it above. This is super
+            important though, so I'm asserting it here as well for extra safety in case we accidentally change something later.
+            */
+            MA_ASSERT(ma_device_get_state(pDevice) != ma_device_state_started);
 
-                /*
-                We need to wait for the worker thread to become available for work before returning. Note that the worker thread will be
-                the one who puts the device into the stopped state. Don't call ma_device__set_state() here.
-                */
-                ma_event_wait(&pDevice->stopEvent);
-                result = MA_SUCCESS;
+            if (pDevice->pContext->callbacks.onDeviceDataLoopWakeup != NULL) {
+                pDevice->pContext->callbacks.onDeviceDataLoopWakeup(pDevice);
             }
 
             /*
-            This is a safety measure to ensure the internal buffer has been cleared so any leftover
-            does not get played the next time the device starts. Ideally this should be drained by
-            the backend first.
+            We need to wait for the worker thread to become available for work before returning. Note that the worker thread will be
+            the one who puts the device into the stopped state. Don't call ma_device__set_state() here.
             */
-            pDevice->playback.intermediaryBufferLen = 0;
-            pDevice->playback.inputCacheConsumed    = 0;
-            pDevice->playback.inputCacheRemaining   = 0;
+            ma_event_wait(&pDevice->stopEvent);
+            result = MA_SUCCESS;
         }
-        ma_mutex_unlock(&pDevice->startStopLock);
+
+        /*
+        This is a safety measure to ensure the internal buffer has been cleared so any leftover
+        does not get played the next time the device starts. Ideally this should be drained by
+        the backend first.
+        */
+        pDevice->playback.intermediaryBufferLen = 0;
+        pDevice->playback.inputCacheConsumed    = 0;
+        pDevice->playback.inputCacheRemaining   = 0;
     }
-    ma_mutex_unlock(&pDevice->wasapi.rerouteLock);
+    ma_mutex_unlock(&pDevice->startStopLock);
 
     return result;
 }
@@ -42022,15 +42241,15 @@ MA_API void ma_pcm_u8_to_s16(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_u8_to_s16__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_u8_to_s16__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_u8_to_s16__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_u8_to_s16__neon(dst, src, count, ditherMode);
         } else
@@ -42089,15 +42308,15 @@ MA_API void ma_pcm_u8_to_s24(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_u8_to_s24__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_u8_to_s24__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_u8_to_s24__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_u8_to_s24__neon(dst, src, count, ditherMode);
         } else
@@ -42154,15 +42373,15 @@ MA_API void ma_pcm_u8_to_s32(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_u8_to_s32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_u8_to_s32__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_u8_to_s32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_u8_to_s32__neon(dst, src, count, ditherMode);
         } else
@@ -42220,15 +42439,15 @@ MA_API void ma_pcm_u8_to_f32(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_u8_to_f32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_u8_to_f32__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_u8_to_f32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_u8_to_f32__neon(dst, src, count, ditherMode);
         } else
@@ -42382,15 +42601,15 @@ MA_API void ma_pcm_s16_to_u8(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s16_to_u8__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s16_to_u8__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s16_to_u8__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s16_to_u8__neon(dst, src, count, ditherMode);
         } else
@@ -42453,15 +42672,15 @@ MA_API void ma_pcm_s16_to_s24(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s16_to_s24__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s16_to_s24__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s16_to_s24__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s16_to_s24__neon(dst, src, count, ditherMode);
         } else
@@ -42515,15 +42734,15 @@ MA_API void ma_pcm_s16_to_s32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s16_to_s32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s16_to_s32__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s16_to_s32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s16_to_s32__neon(dst, src, count, ditherMode);
         } else
@@ -42589,15 +42808,15 @@ MA_API void ma_pcm_s16_to_f32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s16_to_f32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s16_to_f32__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s16_to_f32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s16_to_f32__neon(dst, src, count, ditherMode);
         } else
@@ -42727,15 +42946,15 @@ MA_API void ma_pcm_s24_to_u8(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s24_to_u8__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s24_to_u8__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s24_to_u8__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s24_to_u8__neon(dst, src, count, ditherMode);
         } else
@@ -42807,15 +43026,15 @@ MA_API void ma_pcm_s24_to_s16(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s24_to_s16__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s24_to_s16__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s24_to_s16__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s24_to_s16__neon(dst, src, count, ditherMode);
         } else
@@ -42877,15 +43096,15 @@ MA_API void ma_pcm_s24_to_s32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s24_to_s32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s24_to_s32__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s24_to_s32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s24_to_s32__neon(dst, src, count, ditherMode);
         } else
@@ -42951,15 +43170,15 @@ MA_API void ma_pcm_s24_to_f32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s24_to_f32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s24_to_f32__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s24_to_f32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s24_to_f32__neon(dst, src, count, ditherMode);
         } else
@@ -43097,15 +43316,15 @@ MA_API void ma_pcm_s32_to_u8(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s32_to_u8__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s32_to_u8__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s32_to_u8__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s32_to_u8__neon(dst, src, count, ditherMode);
         } else
@@ -43177,15 +43396,15 @@ MA_API void ma_pcm_s32_to_s16(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s32_to_s16__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s32_to_s16__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s32_to_s16__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s32_to_s16__neon(dst, src, count, ditherMode);
         } else
@@ -43242,15 +43461,15 @@ MA_API void ma_pcm_s32_to_s24(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s32_to_s24__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s32_to_s24__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s32_to_s24__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s32_to_s24__neon(dst, src, count, ditherMode);
         } else
@@ -43322,15 +43541,15 @@ MA_API void ma_pcm_s32_to_f32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s32_to_f32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_s32_to_f32__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s32_to_f32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s32_to_f32__neon(dst, src, count, ditherMode);
         } else
@@ -43455,15 +43674,15 @@ MA_API void ma_pcm_f32_to_u8(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_f32_to_u8__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_f32_to_u8__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_f32_to_u8__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_f32_to_u8__neon(dst, src, count, ditherMode);
         } else
@@ -43802,7 +44021,8 @@ static MA_INLINE void ma_pcm_f32_to_s16__neon(void* dst, const void* src, ma_uin
     float ditherMax;
 
     if (!ma_has_neon()) {
-        return ma_pcm_f32_to_s16__optimized(dst, src, count, ditherMode);
+        ma_pcm_f32_to_s16__optimized(dst, src, count, ditherMode);
+        return;
     }
 
     /* Both the input and output buffers need to be aligned to 16 bytes. */
@@ -43901,15 +44121,15 @@ MA_API void ma_pcm_f32_to_s16(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_f32_to_s16__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_f32_to_s16__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_f32_to_s16__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_f32_to_s16__neon(dst, src, count, ditherMode);
         } else
@@ -43980,15 +44200,15 @@ MA_API void ma_pcm_f32_to_s24(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_f32_to_s24__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_f32_to_s24__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_f32_to_s24__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_f32_to_s24__neon(dst, src, count, ditherMode);
         } else
@@ -44055,15 +44275,15 @@ MA_API void ma_pcm_f32_to_s32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_f32_to_s32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
+    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
         if (ma_has_avx2()) {
             ma_pcm_f32_to_s32__avx2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_f32_to_s32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON && defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_f32_to_s32__neon(dst, src, count, ditherMode);
         } else
@@ -47854,15 +48074,13 @@ static float ma_gainer_calculate_current_gain(const ma_gainer* pGainer, ma_uint3
     return ma_mix_f32_fast(pGainer->pOldGains[channel], pGainer->pNewGains[channel], a);
 }
 
-MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+static ma_result ma_gainer_process_pcm_frames_internal(ma_gainer* pGainer, void* MA_RESTRICT pFramesOut, const void* MA_RESTRICT pFramesIn, ma_uint64 frameCount)
 {
     ma_uint64 iFrame;
     ma_uint32 iChannel;
     ma_uint64 interpolatedFrameCount;
 
-    if (pGainer == NULL) {
-        return MA_INVALID_ARGS;
-    }
+    MA_ASSERT(pGainer != NULL);
 
     /*
     We don't necessarily need to apply a linear interpolation for the entire frameCount frames. When
@@ -47913,7 +48131,7 @@ MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesO
 
                 iFrame = 0;
 
-                /* Optimized loop unroll for stereo. This is mostly just experimenting with some SIMD ideas. It's not necessarily final. */
+                /* Optimized paths for common channel counts. This is mostly just experimenting with some SIMD ideas. It's not necessarily final. */
                 if (pGainer->config.channels == 2) {
                     ma_uint64 unrolledLoopCount = interpolatedFrameCount >> 1;
 
@@ -47937,11 +48155,104 @@ MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesO
                     }
 
                     iFrame = unrolledLoopCount << 1;
+                } else if (pGainer->config.channels == 6) {
+                    /*
+                    For 6 channels things are a bit more complicated because 6 isn't cleanly divisible by 4. We need to do 2 frames
+                    at a time, meaning we'll be doing 12 samples in a group. Like the stereo case we'll need to expand some arrays
+                    so we can do clean 4x SIMD operations.
+                    */
+                    ma_uint64 unrolledLoopCount = interpolatedFrameCount >> 1;
+
+                    pRunningGainDelta[ 6] = pRunningGainDelta[0];
+                    pRunningGainDelta[ 7] = pRunningGainDelta[1];
+                    pRunningGainDelta[ 8] = pRunningGainDelta[2];
+                    pRunningGainDelta[ 9] = pRunningGainDelta[3];
+                    pRunningGainDelta[10] = pRunningGainDelta[4];
+                    pRunningGainDelta[11] = pRunningGainDelta[5];
+
+                    pRunningGain[ 6] = pRunningGain[0] + pRunningGainDelta[0];
+                    pRunningGain[ 7] = pRunningGain[1] + pRunningGainDelta[1];
+                    pRunningGain[ 8] = pRunningGain[2] + pRunningGainDelta[2];
+                    pRunningGain[ 9] = pRunningGain[3] + pRunningGainDelta[3];
+                    pRunningGain[10] = pRunningGain[4] + pRunningGainDelta[4];
+                    pRunningGain[11] = pRunningGain[5] + pRunningGainDelta[5];
+
+                    for (; iFrame < unrolledLoopCount; iFrame += 1) {
+                        pFramesOutF32[iFrame*12 +  0] = pFramesInF32[iFrame * 12 +  0] * pRunningGain[ 0];
+                        pFramesOutF32[iFrame*12 +  1] = pFramesInF32[iFrame * 12 +  1] * pRunningGain[ 1];
+                        pFramesOutF32[iFrame*12 +  2] = pFramesInF32[iFrame * 12 +  2] * pRunningGain[ 2];
+                        pFramesOutF32[iFrame*12 +  3] = pFramesInF32[iFrame * 12 +  3] * pRunningGain[ 3];
+                        pFramesOutF32[iFrame*12 +  4] = pFramesInF32[iFrame * 12 +  4] * pRunningGain[ 4];
+                        pFramesOutF32[iFrame*12 +  5] = pFramesInF32[iFrame * 12 +  5] * pRunningGain[ 5];
+                        pFramesOutF32[iFrame*12 +  6] = pFramesInF32[iFrame * 12 +  6] * pRunningGain[ 6];
+                        pFramesOutF32[iFrame*12 +  7] = pFramesInF32[iFrame * 12 +  7] * pRunningGain[ 7];
+                        pFramesOutF32[iFrame*12 +  8] = pFramesInF32[iFrame * 12 +  8] * pRunningGain[ 8];
+                        pFramesOutF32[iFrame*12 +  9] = pFramesInF32[iFrame * 12 +  9] * pRunningGain[ 9];
+                        pFramesOutF32[iFrame*12 + 10] = pFramesInF32[iFrame * 12 + 10] * pRunningGain[10];
+                        pFramesOutF32[iFrame*12 + 11] = pFramesInF32[iFrame * 12 + 11] * pRunningGain[11];
+
+                        /* Move the running gain forward towards the new gain. */
+                        pRunningGain[ 0] += pRunningGainDelta[ 0];
+                        pRunningGain[ 1] += pRunningGainDelta[ 1];
+                        pRunningGain[ 2] += pRunningGainDelta[ 2];
+                        pRunningGain[ 3] += pRunningGainDelta[ 3];
+                        pRunningGain[ 4] += pRunningGainDelta[ 4];
+                        pRunningGain[ 5] += pRunningGainDelta[ 5];
+                        pRunningGain[ 6] += pRunningGainDelta[ 6];
+                        pRunningGain[ 7] += pRunningGainDelta[ 7];
+                        pRunningGain[ 8] += pRunningGainDelta[ 8];
+                        pRunningGain[ 9] += pRunningGainDelta[ 9];
+                        pRunningGain[10] += pRunningGainDelta[10];
+                        pRunningGain[11] += pRunningGainDelta[11];
+                    }
+
+                    iFrame = unrolledLoopCount << 1;
+                } else if (pGainer->config.channels == 8) {
+                    /* For 8 channels we can just go over frame by frame and do all eight channels as 2 separate 4x SIMD operations. */
+                #if MA_PREFERRED_SIMD == MA_SIMD_SSE2 && defined(MA_SUPPORT_SSE2)
+                    if (ma_has_sse2()) {
+                        __m128 runningGain0      = _mm_loadu_ps(&pRunningGain[0]);
+                        __m128 runningGain1      = _mm_loadu_ps(&pRunningGain[4]);
+                        __m128 runningGainDelta0 = _mm_loadu_ps(&pRunningGainDelta[0]);
+                        __m128 runningGainDelta1 = _mm_loadu_ps(&pRunningGainDelta[4]);
+
+                        for (; iFrame < interpolatedFrameCount; iFrame += 1) {
+                            _mm_storeu_ps(&pFramesOutF32[iFrame*8 + 0], _mm_mul_ps(_mm_loadu_ps(&pFramesInF32[iFrame*8 + 0]), runningGain0));
+                            _mm_storeu_ps(&pFramesOutF32[iFrame*8 + 4], _mm_mul_ps(_mm_loadu_ps(&pFramesInF32[iFrame*8 + 4]), runningGain1));
+
+                            runningGain0 = _mm_add_ps(runningGain0, runningGainDelta0);
+                            runningGain1 = _mm_add_ps(runningGain1, runningGainDelta1);
+                        }
+                    } else
+                #elif MA_PREFERRED_SIMD == MA_SIMD_AVX2 && defined(MA_SUPPORT_AVX2)
+                    if (ma_has_avx2()) {
+                        __m256 runningGain0      = _mm256_loadu_ps(&pRunningGain[0]);
+                        __m256 runningGainDelta0 = _mm256_loadu_ps(&pRunningGainDelta[0]);
+
+                        for (; iFrame < interpolatedFrameCount; iFrame += 1) {
+                            _mm256_storeu_ps(&pFramesOutF32[iFrame*8 + 0], _mm256_mul_ps(_mm256_loadu_ps(&pFramesInF32[iFrame*8 + 0]), runningGain0));
+                            runningGain0 = _mm256_add_ps(runningGain0, runningGainDelta0);
+                        }
+                    } else
+                #endif
+                    {
+                        /* This is crafted so that it auto-vectorizes when compiled with Clang. */
+                        for (; iFrame < interpolatedFrameCount; iFrame += 1) {
+                            for (iChannel = 0; iChannel < 8; iChannel += 1) {
+                                pFramesOutF32[iFrame*8 + iChannel] = pFramesInF32[iFrame*8 + iChannel] * pRunningGain[iChannel];
+                            }
+
+                            /* Move the running gain forward towards the new gain. */
+                            for (iChannel = 0; iChannel < 8; iChannel += 1) {
+                                pRunningGain[iChannel] += pRunningGainDelta[iChannel];
+                            }
+                        }
+                    }
                 }
 
                 for (; iFrame < interpolatedFrameCount; iFrame += 1) {
                     for (iChannel = 0; iChannel < pGainer->config.channels; iChannel += 1) {
-                        pFramesOutF32[iFrame*pGainer->config.channels + iChannel]  = pFramesInF32[iFrame*pGainer->config.channels + iChannel] * pRunningGain[iChannel];
+                        pFramesOutF32[iFrame*pGainer->config.channels + iChannel] = pFramesInF32[iFrame*pGainer->config.channels + iChannel] * pRunningGain[iChannel];
                         pRunningGain[iChannel] += pRunningGainDelta[iChannel];
                     }
                 }
@@ -48017,7 +48328,7 @@ MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesO
             /* We can allow the input and output buffers to be null in which case we'll just update the internal timer. */
             if (pFramesOut != NULL && pFramesIn != NULL) {
                 for (iChannel = 0; iChannel < pGainer->config.channels; iChannel += 1) {
-                    pFramesOutF32[iFrame*pGainer->config.channels + iChannel] = pFramesInF32[iFrame*pGainer->config.channels + iChannel] * ma_gainer_calculate_current_gain(pGainer, iChannel);
+                    pFramesOutF32[iFrame * pGainer->config.channels + iChannel] = pFramesInF32[iFrame * pGainer->config.channels + iChannel] * ma_gainer_calculate_current_gain(pGainer, iChannel);
                 }
             }
 
@@ -48029,6 +48340,19 @@ MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesO
 #endif
 
     return MA_SUCCESS;
+}
+
+MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+{
+    if (pGainer == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    /*
+    ma_gainer_process_pcm_frames_internal() marks pFramesOut and pFramesIn with MA_RESTRICT which
+    helps with auto-vectorization.
+    */
+    return ma_gainer_process_pcm_frames_internal(pGainer, pFramesOut, pFramesIn, frameCount);
 }
 
 static void ma_gainer_set_gain_by_index(ma_gainer* pGainer, float newGain, ma_uint32 iChannel)
@@ -51844,19 +52168,105 @@ static void ma_channel_map_apply_f32(float* pFramesOut, const ma_channel* pChann
                     }
                 }
 
-                for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                iFrame = 0;
+
+                /* Experiment: Try an optimized unroll for some specific cases to see how it improves performance. RESULT: Good gains. */
+                if (channelsOut == 8) {
+                    /* Experiment 2: Expand the inner loop to see what kind of different it makes. RESULT: Small, but worthwhile gain. */
+                    if (channelsIn == 2) {
+                        for (; iFrame < frameCount; iFrame += 1) {
+                            float accumulation[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+                            accumulation[0] += pFramesIn[iFrame*2 + 0] * weights[0][0];
+                            accumulation[1] += pFramesIn[iFrame*2 + 0] * weights[1][0];
+                            accumulation[2] += pFramesIn[iFrame*2 + 0] * weights[2][0];
+                            accumulation[3] += pFramesIn[iFrame*2 + 0] * weights[3][0];
+                            accumulation[4] += pFramesIn[iFrame*2 + 0] * weights[4][0];
+                            accumulation[5] += pFramesIn[iFrame*2 + 0] * weights[5][0];
+                            accumulation[6] += pFramesIn[iFrame*2 + 0] * weights[6][0];
+                            accumulation[7] += pFramesIn[iFrame*2 + 0] * weights[7][0];
+
+                            accumulation[0] += pFramesIn[iFrame*2 + 1] * weights[0][1];
+                            accumulation[1] += pFramesIn[iFrame*2 + 1] * weights[1][1];
+                            accumulation[2] += pFramesIn[iFrame*2 + 1] * weights[2][1];
+                            accumulation[3] += pFramesIn[iFrame*2 + 1] * weights[3][1];
+                            accumulation[4] += pFramesIn[iFrame*2 + 1] * weights[4][1];
+                            accumulation[5] += pFramesIn[iFrame*2 + 1] * weights[5][1];
+                            accumulation[6] += pFramesIn[iFrame*2 + 1] * weights[6][1];
+                            accumulation[7] += pFramesIn[iFrame*2 + 1] * weights[7][1];
+
+                            pFramesOut[iFrame*8 + 0] = accumulation[0];
+                            pFramesOut[iFrame*8 + 1] = accumulation[1];
+                            pFramesOut[iFrame*8 + 2] = accumulation[2];
+                            pFramesOut[iFrame*8 + 3] = accumulation[3];
+                            pFramesOut[iFrame*8 + 4] = accumulation[4];
+                            pFramesOut[iFrame*8 + 5] = accumulation[5];
+                            pFramesOut[iFrame*8 + 6] = accumulation[6];
+                            pFramesOut[iFrame*8 + 7] = accumulation[7];
+                        }
+                    } else {
+                        /* When outputting to 8 channels, we can do everything in groups of two 4x SIMD operations. */
+                        for (; iFrame < frameCount; iFrame += 1) {
+                            float accumulation[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+                            for (iChannelIn = 0; iChannelIn < channelsIn; iChannelIn += 1) {
+                                accumulation[0] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[0][iChannelIn];
+                                accumulation[1] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[1][iChannelIn];
+                                accumulation[2] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[2][iChannelIn];
+                                accumulation[3] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[3][iChannelIn];
+                                accumulation[4] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[4][iChannelIn];
+                                accumulation[5] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[5][iChannelIn];
+                                accumulation[6] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[6][iChannelIn];
+                                accumulation[7] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[7][iChannelIn];
+                            }
+
+                            pFramesOut[iFrame*8 + 0] = accumulation[0];
+                            pFramesOut[iFrame*8 + 1] = accumulation[1];
+                            pFramesOut[iFrame*8 + 2] = accumulation[2];
+                            pFramesOut[iFrame*8 + 3] = accumulation[3];
+                            pFramesOut[iFrame*8 + 4] = accumulation[4];
+                            pFramesOut[iFrame*8 + 5] = accumulation[5];
+                            pFramesOut[iFrame*8 + 6] = accumulation[6];
+                            pFramesOut[iFrame*8 + 7] = accumulation[7];
+                        }
+                    }
+                } else if (channelsOut == 6) {
+                    /*
+                    When outputting to 6 channels we unfortunately don't have a nice multiple of 4 to do 4x SIMD operations. Instead we'll
+                    expand our weights and do two frames at a time.
+                    */
+                    for (; iFrame < frameCount; iFrame += 1) {
+                        float accumulation[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+                        for (iChannelIn = 0; iChannelIn < channelsIn; iChannelIn += 1) {
+                            accumulation[0] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[0][iChannelIn];
+                            accumulation[1] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[1][iChannelIn];
+                            accumulation[2] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[2][iChannelIn];
+                            accumulation[3] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[3][iChannelIn];
+                            accumulation[4] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[4][iChannelIn];
+                            accumulation[5] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[5][iChannelIn];
+                        }
+
+                        pFramesOut[iFrame*6 + 0] = accumulation[0];
+                        pFramesOut[iFrame*6 + 1] = accumulation[1];
+                        pFramesOut[iFrame*6 + 2] = accumulation[2];
+                        pFramesOut[iFrame*6 + 3] = accumulation[3];
+                        pFramesOut[iFrame*6 + 4] = accumulation[4];
+                        pFramesOut[iFrame*6 + 5] = accumulation[5];
+                    }
+                }
+
+                /* Leftover frames. */
+                for (; iFrame < frameCount; iFrame += 1) {
                     for (iChannelOut = 0; iChannelOut < channelsOut; iChannelOut += 1) {
                         float accumulation = 0;
 
                         for (iChannelIn = 0; iChannelIn < channelsIn; iChannelIn += 1) {
-                            accumulation += pFramesIn[iChannelIn] * weights[iChannelOut][iChannelIn];
+                            accumulation += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[iChannelOut][iChannelIn];
                         }
 
-                        pFramesOut[iChannelOut] = accumulation;
+                        pFramesOut[iFrame*channelsOut + iChannelOut] = accumulation;
                     }
-
-                    pFramesOut += channelsOut;
-                    pFramesIn  += channelsIn;
                 }
             } else {
                 /* Cannot pre-compute weights because not enough room in stack-allocated buffer. */
@@ -51867,14 +52277,11 @@ static void ma_channel_map_apply_f32(float* pFramesOut, const ma_channel* pChann
 
                         for (iChannelIn = 0; iChannelIn < channelsIn; iChannelIn += 1) {
                             ma_channel channelIn = ma_channel_map_get_channel(pChannelMapIn, channelsIn, iChannelIn);
-                            accumulation += pFramesIn[iChannelIn] * ma_calculate_channel_position_rectangular_weight(channelOut, channelIn);
+                            accumulation += pFramesIn[iFrame*channelsIn + iChannelIn] * ma_calculate_channel_position_rectangular_weight(channelOut, channelIn);
                         }
 
-                        pFramesOut[iChannelOut] = accumulation;
+                        pFramesOut[iFrame*channelsOut + iChannelOut] = accumulation;
                     }
-
-                    pFramesOut += channelsOut;
-                    pFramesIn  += channelsIn;
                 }
             }
         }
@@ -66150,6 +66557,8 @@ static ma_result ma_resource_manager_data_buffer_uninit_connector(ma_resource_ma
     MA_ASSERT(pResourceManager != NULL);
     MA_ASSERT(pDataBuffer      != NULL);
 
+    (void)pResourceManager;
+
     switch (ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode))
     {
         case ma_resource_manager_data_supply_type_encoded:          /* Connector is a decoder. */
@@ -69773,6 +70182,8 @@ static ma_result ma_node_input_bus_read_pcm_frames(ma_node* pInputNode, ma_node_
     ma_uint32 inputChannels;
     ma_bool32 doesOutputBufferHaveContent = MA_FALSE;
 
+    (void)pInputNode;   /* Not currently used. */
+
     /*
     This will be called from the audio thread which means we can't be doing any locking. Basically,
     this function will not perfom any locking, whereas attaching and detaching will, but crafted in
@@ -73009,7 +73420,7 @@ MA_API ma_result ma_engine_init(const ma_engine_config* pConfig, ma_engine* pEng
                 Temporarily disabled. There is a subtle bug here where front-left and front-right
                 will be used by the device's channel map, but this is not what we want to use for
                 spatialization. Instead we want to use side-left and side-right. I need to figure
-                out a better solution for this. For now, disabling the user of device channel maps.
+                out a better solution for this. For now, disabling the use of device channel maps.
                 */
                 /*listenerConfig.pChannelMapOut = pEngine->pDevice->playback.channelMap;*/
             }
