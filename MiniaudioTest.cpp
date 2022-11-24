@@ -7,9 +7,20 @@
 
 static bool test_playback = true;
 
-void log(const char* message) {
+void PrintToLog(const char* message) {
   std::cout << message;
+
+#if (defined(_MSC_VER))
   OutputDebugString(message);
+#endif
+}
+
+void OnLog(ma_uint32 level, const char* pMessage)
+{
+  constexpr int kBufferSize = 512;
+  char buffer[kBufferSize];
+  _snprintf(buffer, kBufferSize, "%s: %s", ma_log_level_to_string(level), pMessage);
+  PrintToLog(buffer);
 }
 
 class MiniAudioTest {
@@ -17,20 +28,20 @@ public:
   MiniAudioTest() = default;
   virtual ~MiniAudioTest() = default;
   void Create() {
-    log("Creating ma_engine object...\n");
+    PrintToLog("Creating ma_engine object...\n");
     engine_ = std::make_unique<ma_engine>();
     if (!engine_) {
-      log("Failed to create ma_engine object.\n");
+      PrintToLog("Failed to create ma_engine object.\n");
       return;
     }
 
-    log("Invoking ma_engine_config_init()...\n");
+    PrintToLog("Invoking ma_engine_config_init()...\n");
     ma_engine_config engine_config = ma_engine_config_init();
 
-    log("Invoking ma_engine_init()...\n");
+    PrintToLog("Invoking ma_engine_init()...\n");
     ma_result result = ma_engine_init(&engine_config, engine_.get());
     if (result != MA_SUCCESS) {
-      log("ma_engine_init() error.\n");
+      PrintToLog("ma_engine_init() error.\n");
       return;
     }
 
@@ -39,22 +50,22 @@ public:
 
   void Destroy() {
     if (!engine_) {
-      log("No ma_engine.\n");
+      PrintToLog("No ma_engine.\n");
       return;
     }
 
     if (was_initialized_) {
-      log("Invoking ma_engine_stop()...\n");
+      PrintToLog("Invoking ma_engine_stop()...\n");
       ma_result result = ma_engine_stop(engine_.get());
       if (result != MA_SUCCESS) {
-        log("ma_engine_stop() error.\n");
+        PrintToLog("ma_engine_stop() error.\n");
       }
 
-      log("Invoking ma_engine_uninit()...\n");
+      PrintToLog("Invoking ma_engine_uninit()...\n");
       ma_engine_uninit(engine_.get());
     }
 
-    log("Destroying ma_engine object...\n");
+    PrintToLog("Destroying ma_engine object...\n");
     engine_ = nullptr;
     was_initialized_ = false;
   }
@@ -130,6 +141,7 @@ private:
 };
 
 int main() {
+  ma_log_simple_callback = &OnLog;
   MiniAudioTest miniaudio_test;
 
   while (true) {

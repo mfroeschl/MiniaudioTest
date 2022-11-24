@@ -4407,6 +4407,8 @@ Remarks
 Do not modify the state of the device from inside the callback.
 */
 typedef void (* ma_log_callback_proc)(void* pUserData, ma_uint32 level, const char* pMessage);
+typedef void (*ma_log_simple_callback_proc)(ma_uint32 level, const char* pMessage);
+static ma_log_simple_callback_proc ma_log_simple_callback = NULL;
 
 typedef struct
 {
@@ -13163,6 +13165,11 @@ void ma_log_callback_debug(void* pUserData, ma_uint32 level, const char* pMessag
 {
     (void)pUserData;
 
+    if (ma_log_simple_callback) {
+        ma_log_simple_callback(level, pMessage);
+        return;
+    }
+
     /* Special handling for some platforms. */
     #if defined(MA_ANDROID)
     {
@@ -13171,13 +13178,6 @@ void ma_log_callback_debug(void* pUserData, ma_uint32 level, const char* pMessag
     }
     #else
     {
-#if defined(_MSC_VER)
-        constexpr int kBufferSize = 512;
-        char buffer[kBufferSize];
-        _snprintf(buffer, kBufferSize, "%s: %s", ma_log_level_to_string(level), pMessage);
-        OutputDebugString(buffer);
-#endif
-
         /* Everything else. */
         printf("%s: %s", ma_log_level_to_string(level), pMessage);
     }
