@@ -60,6 +60,11 @@ public:
       return;
     }
 
+    if (!was_initialized_) {
+      std::cout << "ma_engine was not initialized.\n";
+      return;
+    }
+
     std::cout << "Creating ma_sound object...\n";
     sound_ = std::make_unique<ma_sound>();
     if (!sound_) {
@@ -87,6 +92,11 @@ public:
   void Stop() {
     if (!engine_) {
       std::cout << "No ma_engine.\n";
+      return;
+    }
+
+    if (!was_initialized_) {
+      std::cout << "ma_engine was not initialized.\n";
       return;
     }
 
