@@ -72,65 +72,65 @@ public:
 
   void Play() {
     if (!engine_) {
-      std::cout << "No ma_engine.\n";
+      PrintToLog("No ma_engine.\n");
       return;
     }
 
     if (!was_initialized_) {
-      std::cout << "ma_engine was not initialized.\n";
+      PrintToLog("ma_engine was not initialized.\n");
       return;
     }
 
-    std::cout << "Creating ma_sound object...\n";
+    PrintToLog("Creating ma_sound object...\n");
     sound_ = std::make_unique<ma_sound>();
     if (!sound_) {
-      std::cout << "Could not create ma_sound object.\n";
+      PrintToLog("Could not create ma_sound object.\n");
       return;
     }
 
     ma_uint32 flags = 0;
 
-    std::cout << "Invoking ma_sound_init_from_file()...\n";
+    PrintToLog("Invoking ma_sound_init_from_file()...\n");
     ma_result result = ma_sound_init_from_file(engine_.get(), "test.wav", flags, nullptr, nullptr, sound_.get());
     if (result != MA_SUCCESS) {
-      std::cout << "ma_sound_init_from_file() error.\n";
+      PrintToLog("ma_sound_init_from_file() error.\n");
       return;
     }
 
-    std::cout << "Invoking ma_sound_start()...\n";
+    PrintToLog("Invoking ma_sound_start()...\n");
     result = ma_sound_start(sound_.get());
     if (result != MA_SUCCESS) {
-      std::cout << "ma_sound_start() error.\n";
+      PrintToLog("ma_sound_start() error.\n");
       return;
     }
   }
 
   void Stop() {
     if (!engine_) {
-      std::cout << "No ma_engine.\n";
+      PrintToLog("No ma_engine.\n");
       return;
     }
 
     if (!was_initialized_) {
-      std::cout << "ma_engine was not initialized.\n";
+      PrintToLog("ma_engine was not initialized.\n");
       return;
     }
 
     if (!sound_) {
-      std::cout << "No ma_sound.\n";
+      PrintToLog("No ma_sound.\n");
       return;
     }
 
-    std::cout << "Invoking ma_sound_stop()...\n";
+    PrintToLog("Invoking ma_sound_stop()...\n");
     ma_result result = ma_sound_stop(sound_.get());
     if (result != MA_SUCCESS) {
-      std::cout << "ma_sound_stop() error.\n";
+      PrintToLog("ma_sound_stop() error.\n");
     }
 
-    std::cout << "Invoking ma_sound_uninit()...\n";
+    PrintToLog("Invoking ma_sound_uninit()...\n");
     ma_sound_uninit(sound_.get());
 
-    std::cout << "Destroying ma_sound object...\n";
+    PrintToLog("Destroying ma_sound object...\n");
     sound_ = nullptr;
   }
 
